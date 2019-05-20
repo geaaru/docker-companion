@@ -45,6 +45,13 @@
   branch = "master"
   name = "github.com/docker/libnetwork"
 
+[[override]]  
+  branch = "master"
+  name = "github.com/opencontainers/runtime-tools"
+
+[[override]]
+  branch = "master"
+  name = "github.com/opencontainers/runtime-spec"
 
 [prune]
   go-tests = true

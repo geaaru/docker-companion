@@ -248,6 +248,14 @@
   version = "v1.0.2"
 
 [[projects]]
+  digest = "1:948002dbf9ee54733c8f49df105f30ebefe1ee5ab4f5c98e0f8347ceff450caf"
+  name = "github.com/mudler/docker-companion"
+  packages = ["api"]
+  pruneopts = "UT"
+  revision = "6a693e9b9eaf2cd08ba628350613f2e08e9af57d"
+  version = "v0.4.5"
+
+[[projects]]
   digest = "1:0858a0639edda35828bf87916673f5a8e3c622fed8e81b9706205beb93cb660a"
   name = "github.com/openSUSE/umoci"
   packages = [
@@ -297,15 +305,16 @@
   version = "v0.1.1"
 
 [[projects]]
-  digest = "1:57234a321bf1f8f98a8a9a5122a2404cc60d0800516f4ab7a7b2375e4b2d19ea"
+  branch = "master"
+  digest = "1:9b1faa0a95eb542ac3a4b769a26dd225e368128b9e6ea652fef9eadf8873fe2f"
   name = "github.com/opencontainers/runtime-spec"
   packages = ["specs-go"]
   pruneopts = "UT"
-  revision = "4e3b9264a330d094b0386c3703c5f379119711e8"
-  version = "v1.0.1"
+  revision = "5b71a03e2700cbb1091b78849b8748f5e1692650"
 
 [[projects]]
-  digest = "1:86152e5dfb62b1e2fb234495a27ff4ccb369d210bd1a46af688f6e514dcf2aaa"
+  branch = "master"
+  digest = "1:1541feadd2e654b271f03937914f1d556387adaacf938237ace3c3b5d1b6413e"
   name = "github.com/opencontainers/runtime-tools"
   packages = [
     "error",
@@ -316,8 +325,7 @@
     "validate",
   ]
   pruneopts = "UT"
-  revision = "ee63cfa6f66491e78f8e63c37806d7a905eb836e"
-  version = "v0.9.0"
+  revision = "095789df6c2bc53a9dd4464cda8c22616d66e0d6"
 
 [[projects]]
   digest = "1:3e824b6fb758a8b021d30b613d84e7404d06d33c8f43f92baed633427836736c"
@@ -461,6 +469,7 @@
     "github.com/docker/docker/pkg/archive",
     "github.com/fsouza/go-dockerclient",
     "github.com/heroku/docker-registry-client/registry",
+    "github.com/mudler/docker-companion/api",
     "github.com/openSUSE/umoci/oci/layer",
     "github.com/spf13/jwalterweatherman",
   ]
