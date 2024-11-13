@@ -1,3 +1,5 @@
+//go:build windows
+
 package wclayer
 
 import (
@@ -6,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"github.com/Microsoft/go-winio"
 	"github.com/Microsoft/hcsshim/internal/longpath"
 	"github.com/Microsoft/hcsshim/internal/safefile"
+	"github.com/Microsoft/hcsshim/internal/winapi"
 )
 
 var errorIterationCanceled = errors.New("")
@@ -75,7 +77,7 @@ func readTombstones(path string) (map[string]([]string), error) {
 	defer tf.Close()
 	s := bufio.NewScanner(tf)
 	if !s.Scan() || s.Text() != "\xef\xbb\xbfVersion 1.0" {
-		return nil, errors.New("Invalid tombstones file")
+		return nil, errors.New("invalid tombstones file")
 	}
 
 	ts := make(map[string]([]string))
@@ -261,7 +263,6 @@ func (r *legacyLayerReader) Next() (path string, size int64, fileInfo *winio.Fil
 		// The creation time and access time get reset for files outside of the Files path.
 		fileInfo.CreationTime = fileInfo.LastWriteTime
 		fileInfo.LastAccessTime = fileInfo.LastWriteTime
-
 	} else {
 		// The file attributes are written before the backup stream.
 		var attr uint32
@@ -291,6 +292,18 @@ func (r *legacyLayerReader) Next() (path string, size int64, fileInfo *winio.Fil
 	r.currentFile = f
 	f = nil
 	return
+}
+
+func (r *legacyLayerReader) LinkInfo() (uint32, *winio.FileIDInfo, error) {
+	fileStandardInfo, err := winio.GetFileStandardInfo(r.currentFile)
+	if err != nil {
+		return 0, nil, err
+	}
+	fileIDInfo, err := winio.GetFileID(r.currentFile)
+	if err != nil {
+		return 0, nil, err
+	}
+	return fileStandardInfo.NumberOfLinks, fileIDInfo, nil
 }
 
 func (r *legacyLayerReader) Read(b []byte) (int, error) {
@@ -341,14 +354,14 @@ type legacyLayerWriter struct {
 	backupWriter    *winio.BackupFileWriter
 	Tombstones      []string
 	HasUtilityVM    bool
-	uvmDi           []dirInfo
+	changedDi       []dirInfo
 	addedFiles      map[string]bool
 	PendingLinks    []pendingLink
 	pendingDirs     []pendingDir
 	currentIsDir    bool
 }
 
-// newLegacyLayerWriter returns a LayerWriter that can write the contaler layer
+// newLegacyLayerWriter returns a LayerWriter that can write the container layer
 // transport format to disk.
 func newLegacyLayerWriter(root string, parentRoots []string, destRoot string) (w *legacyLayerWriter, err error) {
 	w = &legacyLayerWriter{
@@ -375,7 +388,7 @@ func newLegacyLayerWriter(root string, parentRoots []string, destRoot string) (w
 		}
 		w.parentRoots = append(w.parentRoots, f)
 	}
-	w.bufWriter = bufio.NewWriterSize(ioutil.Discard, 65536)
+	w.bufWriter = bufio.NewWriterSize(io.Discard, 65536)
 	return
 }
 
@@ -389,7 +402,7 @@ func (w *legacyLayerWriter) CloseRoots() {
 		w.destRoot = nil
 	}
 	for i := range w.parentRoots {
-		w.parentRoots[i].Close()
+		_ = w.parentRoots[i].Close()
 	}
 	w.parentRoots = nil
 }
@@ -418,7 +431,7 @@ func (w *legacyLayerWriter) reset() error {
 	if err != nil {
 		return err
 	}
-	w.bufWriter.Reset(ioutil.Discard)
+	w.bufWriter.Reset(io.Discard)
 	if w.currentIsDir {
 		r := w.currentFile
 		br := winio.NewBackupStreamReader(r)
@@ -472,8 +485,8 @@ func copyFileWithMetadata(srcRoot, destRoot *os.File, subPath string, isDir bool
 		srcRoot,
 		syscall.GENERIC_READ|winio.ACCESS_SYSTEM_SECURITY,
 		syscall.FILE_SHARE_READ,
-		safefile.FILE_OPEN,
-		safefile.FILE_OPEN_REPARSE_POINT)
+		winapi.FILE_OPEN,
+		winapi.FILE_OPEN_REPARSE_POINT)
 	if err != nil {
 		return nil, err
 	}
@@ -488,14 +501,14 @@ func copyFileWithMetadata(srcRoot, destRoot *os.File, subPath string, isDir bool
 
 	extraFlags := uint32(0)
 	if isDir {
-		extraFlags |= safefile.FILE_DIRECTORY_FILE
+		extraFlags |= winapi.FILE_DIRECTORY_FILE
 	}
 	dest, err := safefile.OpenRelative(
 		subPath,
 		destRoot,
 		syscall.GENERIC_READ|syscall.GENERIC_WRITE|winio.WRITE_DAC|winio.WRITE_OWNER|winio.ACCESS_SYSTEM_SECURITY,
 		syscall.FILE_SHARE_READ,
-		safefile.FILE_CREATE,
+		winapi.FILE_CREATE,
 		extraFlags)
 	if err != nil {
 		return nil, err
@@ -555,7 +568,7 @@ func cloneTree(srcRoot *os.File, destRoot *os.File, subPath string, mutatedFiles
 			if err != nil {
 				return err
 			}
-			if isDir && !isReparsePoint {
+			if isDir {
 				di = append(di, dirInfo{path: relPath, fileInfo: *fi})
 			}
 		} else {
@@ -583,6 +596,10 @@ func (w *legacyLayerWriter) Add(name string, fileInfo *winio.FileBasicInfo) erro
 		return w.initUtilityVM()
 	}
 
+	if (fileInfo.FileAttributes & syscall.FILE_ATTRIBUTE_DIRECTORY) != 0 {
+		w.changedDi = append(w.changedDi, dirInfo{path: name, fileInfo: *fileInfo})
+	}
+
 	name = filepath.Clean(name)
 	if hasPathPrefix(name, utilityVMPath) {
 		if !w.HasUtilityVM {
@@ -591,7 +608,7 @@ func (w *legacyLayerWriter) Add(name string, fileInfo *winio.FileBasicInfo) erro
 		if !hasPathPrefix(name, utilityVMFilesPath) && name != utilityVMFilesPath {
 			return errors.New("invalid UtilityVM layer")
 		}
-		createDisposition := uint32(safefile.FILE_OPEN)
+		createDisposition := uint32(winapi.FILE_OPEN)
 		if (fileInfo.FileAttributes & syscall.FILE_ATTRIBUTE_DIRECTORY) != 0 {
 			st, err := safefile.LstatRelative(name, w.destRoot)
 			if err != nil && !os.IsNotExist(err) {
@@ -612,16 +629,13 @@ func (w *legacyLayerWriter) Add(name string, fileInfo *winio.FileBasicInfo) erro
 					return err
 				}
 			}
-			if fileInfo.FileAttributes&syscall.FILE_ATTRIBUTE_REPARSE_POINT == 0 {
-				w.uvmDi = append(w.uvmDi, dirInfo{path: name, fileInfo: *fileInfo})
-			}
 		} else {
 			// Overwrite any existing hard link.
 			err := safefile.RemoveRelative(name, w.destRoot)
 			if err != nil && !os.IsNotExist(err) {
 				return err
 			}
-			createDisposition = safefile.FILE_CREATE
+			createDisposition = winapi.FILE_CREATE
 		}
 
 		f, err := safefile.OpenRelative(
@@ -630,7 +644,7 @@ func (w *legacyLayerWriter) Add(name string, fileInfo *winio.FileBasicInfo) erro
 			syscall.GENERIC_READ|syscall.GENERIC_WRITE|winio.WRITE_DAC|winio.WRITE_OWNER|winio.ACCESS_SYSTEM_SECURITY,
 			syscall.FILE_SHARE_READ,
 			createDisposition,
-			safefile.FILE_OPEN_REPARSE_POINT,
+			winapi.FILE_OPEN_REPARSE_POINT,
 		)
 		if err != nil {
 			return err
@@ -638,7 +652,7 @@ func (w *legacyLayerWriter) Add(name string, fileInfo *winio.FileBasicInfo) erro
 		defer func() {
 			if f != nil {
 				f.Close()
-				safefile.RemoveRelative(name, w.destRoot)
+				_ = safefile.RemoveRelative(name, w.destRoot)
 			}
 		}()
 
@@ -667,14 +681,14 @@ func (w *legacyLayerWriter) Add(name string, fileInfo *winio.FileBasicInfo) erro
 		w.currentIsDir = true
 	}
 
-	f, err := safefile.OpenRelative(fname, w.root, syscall.GENERIC_READ|syscall.GENERIC_WRITE, syscall.FILE_SHARE_READ, safefile.FILE_CREATE, 0)
+	f, err := safefile.OpenRelative(fname, w.root, syscall.GENERIC_READ|syscall.GENERIC_WRITE, syscall.FILE_SHARE_READ, winapi.FILE_CREATE, 0)
 	if err != nil {
 		return err
 	}
 	defer func() {
 		if f != nil {
 			f.Close()
-			safefile.RemoveRelative(fname, w.root)
+			_ = safefile.RemoveRelative(fname, w.root)
 		}
 	}()
 
@@ -693,7 +707,7 @@ func (w *legacyLayerWriter) Add(name string, fileInfo *winio.FileBasicInfo) erro
 		// The file attributes are written before the stream.
 		err = binary.Write(w.bufWriter, binary.LittleEndian, uint32(fileInfo.FileAttributes))
 		if err != nil {
-			w.bufWriter.Reset(ioutil.Discard)
+			w.bufWriter.Reset(io.Discard)
 			return err
 		}
 	}
@@ -728,7 +742,7 @@ func (w *legacyLayerWriter) AddLink(name string, target string) error {
 		return errors.New("invalid hard link in layer")
 	}
 
-	// Find to try the target of the link in a previously added file. If that
+	// Try to find the target of the link in a previously added file. If that
 	// fails, search in parent layers.
 	var selectedRoot *os.File
 	if _, ok := w.addedFiles[target]; ok {
@@ -801,12 +815,6 @@ func (w *legacyLayerWriter) Close() error {
 	}
 	for _, pd := range w.pendingDirs {
 		err := safefile.MkdirRelative(pd.Path, pd.Root)
-		if err != nil {
-			return err
-		}
-	}
-	if w.HasUtilityVM {
-		err := reapplyDirectoryTimes(w.destRoot, w.uvmDi)
 		if err != nil {
 			return err
 		}
